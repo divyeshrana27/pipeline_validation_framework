@@ -1,0 +1,8 @@
+make sure to have java 11 as runtime environment, spark only works with this.
+
+sedona is used as spatial support, make sure to include everything in pom dependecies.
+
+in inputpath, we pass only shapefile directory not actual .shp
+
+we need to call different functions as we have multiple input file formats, shp & csv
+
