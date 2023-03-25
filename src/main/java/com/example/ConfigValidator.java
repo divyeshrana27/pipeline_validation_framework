@@ -4,18 +4,11 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
-
-import javax.annotation.meta.When;
-import javax.swing.text.StyledEditorKit.BoldAction;
-
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.LI;
 import org.apache.sedona.core.formatMapper.shapefileParser.ShapefileReader;
 import org.apache.sedona.core.spatialRDD.SpatialRDD;
 import org.apache.sedona.sql.utils.Adapter;
@@ -24,13 +17,10 @@ import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.Column;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.SaveMode;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.functions;
-import org.apache.spark.sql.api.java.UDF1;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DataTypes;
-import org.apache.spark.sql.types.StructField;
 import org.geotools.data.DataStore;
 import org.geotools.data.DataStoreFinder;
 import org.geotools.data.FeatureSource;
@@ -42,9 +32,6 @@ import org.opengis.feature.simple.SimpleFeatureType;
 import org.opengis.feature.type.AttributeDescriptor;
 
 import com.example.udfutils.ValidJSONCheck;
-
-import scala.Array;
-import scala.collection.Seq;
 
 
 /* Currently only focus on shapefile */
@@ -106,6 +93,39 @@ public class ConfigValidator {
         );
     }
 
+    private void writeToReport(String message){
+        this.report.println(message + "\n");
+        this.report.flush();
+    }
+
+    private void generateReportOfInvalidData(Dataset<Row> invalidDf, String dirName){
+        // List<String> columnNames = Arrays.asList(invalidDf.schema().fieldNames());
+
+        invalidDf.toJavaRDD().map(row -> {
+            List<String> vals = new ArrayList<>();
+            for (int i = 0; i < row.length(); i++) {
+                if(row.get(i) == null){
+                    vals.add("null");
+                }
+                else vals.add(row.get(i).toString());
+            }
+            return String.join("\t", vals);
+        }).saveAsTextFile(dirName);
+
+        // for (String column : columnNames) {
+        //     invalidDf = invalidDf.withColumn(column, functions.col(column).cast(DataTypes.StringType));
+        // }
+
+        // invalidDf = invalidDf.withColumn(
+        //                     "data",
+        //                     functions.expr(String.format("concat_ws('\t', %s)", String.join(",", columnNames)))
+        //                 );
+                    
+        // invalidDf.select("data").write().mode(SaveMode.Append).text("file");
+
+    }   
+
+
     public ConfigValidator(JSONObject config, String inputFilePath, String reportPath) {
         this.config = config;
         this.inputFilePath = inputFilePath;
@@ -137,7 +157,7 @@ public class ConfigValidator {
             this.featureSource = dataStore.getFeatureSource(typeName);
         }catch(Exception e){
             this.featureSource = null;
-            System.out.println("Errorrrr");
+            System.out.println("Error");
         }
         // dtypesmap convert featuresource types to datatypes.types dynamically
         this.dtypesMapStringToDatatype = new HashMap<>();
@@ -164,59 +184,29 @@ public class ConfigValidator {
                     DataType featureNameType = getDataTypeFor(featureName);
                     if(!this.dtypesMapStringToDatatype.get(dtype).equals(featureNameType)){
                         // update report here   
-                        report.printf("Error: Type mismatch for column %s", featureName);
+                        writeToReport(String.format("Error: Type mismatch for column %s", featureName));
                     }
                 }
             }
         }
     }
 
-    private void updateReport(Dataset<Row> invalidDf, String dirName){
-        // List<String> columnNames = Arrays.asList(invalidDf.schema().fieldNames());
-
-        invalidDf.toJavaRDD().map(row -> {
-            List<String> vals = new ArrayList<>();
-            for (int i = 0; i < row.length(); i++) {
-                if(row.get(i) == null){
-                    vals.add("null");
-                }
-                else vals.add(row.get(i).toString());
-            }
-            return String.join("\t", vals);
-        }).saveAsTextFile(dirName);
-
-        // for (String column : columnNames) {
-        //     invalidDf = invalidDf.withColumn(column, functions.col(column).cast(DataTypes.StringType));
-        // }
-
-        // invalidDf = invalidDf.withColumn(
-        //                     "data",
-        //                     functions.expr(String.format("concat_ws('\t', %s)", String.join(",", columnNames)))
-        //                 );
-                    
-        // invalidDf.select("data").write().mode(SaveMode.Append).text("file");
-
-    }   
-
     private Boolean checkJSONStructure(String featureName){
         this.sparkSession.udf().register("isValidJsonStructure", new ValidJSONCheck(), DataTypes.BooleanType);
-        
-        Dataset<Row> temp = this.df.select("Condition").filter(functions.not(functions.isnull(functions.col("Condition"))));
-        System.out.println("count - " + "Condition" + " - " + temp.count());
+
         Dataset<Row> invalidDf = this.df.filter(functions.not(
             functions.when(functions.not(functions.isnull(functions.col(featureName))), 
             functions.callUDF("isValidJsonStructure", functions.col(featureName)))
             ));
         // get those rows which failed here
         Boolean verdict = invalidDf.count() == 0;
-        System.out.println("count - " + featureName + " - " + invalidDf.count());
         if(verdict == false){
-            report.printf("Error: Invalid json structure found in column %s", featureName);
-            updateReport(invalidDf, "report/invalidJSON_"+featureName);
+            generateReportOfInvalidData(invalidDf, "report/invalidJSON_"+featureName);
         }
         return verdict;
     }
 
+    // validate json of all features from config json
     private void JSONValidation(){
         if(this.config.has("attributes") && this.config.getJSONObject("attributes").has("dtypes")){
             JSONObject dtypes = this.config.getJSONObject("attributes").getJSONObject("dtypes");
@@ -225,7 +215,7 @@ public class ConfigValidator {
                 for (int i = 0; i < featureNames.length(); i++) {
                     String featureName = featureNames.getString(i);
                     if(!checkJSONStructure(featureName)){
-                        report.printf("Error: Invalid json structure for column %s", featureName);
+                        writeToReport(String.format("Error: Invalid json structure for column %s", featureName));
                     }
                 }
             }
