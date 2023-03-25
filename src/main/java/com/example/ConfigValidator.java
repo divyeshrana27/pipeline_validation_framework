@@ -178,7 +178,7 @@ public class ConfigValidator {
             List<String> vals = new ArrayList<>();
             for (int i = 0; i < row.length(); i++) {
                 if(row.get(i) == null){
-                    vals.add('null');
+                    vals.add("null");
                 }
                 else vals.add(row.get(i).toString());
             }
