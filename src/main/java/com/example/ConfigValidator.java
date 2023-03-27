@@ -14,6 +14,7 @@ import javax.swing.text.StyledEditorKit.BoldAction;
 
 import org.apache.arrow.flatbuf.Bool;
 import org.apache.sedona.core.formatMapper.shapefileParser.ShapefileReader;
+import org.apache.sedona.core.geometryObjects.GeometrySerde;
 import org.apache.sedona.core.spatialRDD.SpatialRDD;
 import org.apache.sedona.sql.utils.Adapter;
 import org.apache.sedona.sql.utils.SedonaSQLRegistrator;
@@ -35,6 +36,7 @@ import org.opengis.feature.simple.SimpleFeature;
 import org.opengis.feature.simple.SimpleFeatureType;
 import org.opengis.feature.type.AttributeDescriptor;
 
+import com.esotericsoftware.kryo.NotNull;
 import com.example.udfutils.ValidJSONCheck;
 
 import afu.org.checkerframework.checker.fenum.qual.SwingCompassDirection;
@@ -408,7 +410,7 @@ public class ConfigValidator {
         // get those rows which failed here
         Boolean verdict = invalidDf.count() == 0;
         if(verdict == false){
-            generateReportOfInvalidData(invalidDf, "report/invalidNotEqualVal_"+featureName);
+            generateReportOfInvalidData(invalidDf, "report/invalidInclusiveSubsetVal_"+featureName);
         }
         return verdict;
     }
@@ -421,7 +423,7 @@ public class ConfigValidator {
         // get those rows which failed here
         Boolean verdict = invalidDf.count() == 0;
         if(verdict == false){
-            generateReportOfInvalidData(invalidDf, "report/invalidNotEqualVal_"+featureName);
+            generateReportOfInvalidData(invalidDf, "report/invalidExclusiveSubsetVal_"+featureName);
         }
         return verdict;
     }
@@ -432,7 +434,6 @@ public class ConfigValidator {
             if(subsets.has("inclusive")){
                 JSONObject inclusive = subsets.getJSONObject("inclusive");
                 for (String featureName : inclusive.keySet()) {
-                    System.out.println(inclusive.getJSONArray(featureName).toList() + " " + featureName);
                     inclusiveSubsetValidation(featureName, getValuesArray(inclusive, featureName));
                 }
             }
@@ -445,7 +446,52 @@ public class ConfigValidator {
         }
     }    
 
-    
+    private Boolean notNullValidate(String featureName){
+        Dataset<Row> invalidDf = this.df.filter(
+            functions.isnull(functions.col(featureName))
+        );
+        // get those rows which failed here
+        Boolean verdict = invalidDf.count() == 0;
+        if(verdict == false){
+            generateReportOfInvalidData(invalidDf, "report/invalidNotnullVal_"+featureName);
+        }
+        return verdict;
+    }
+
+    private void notNullValidation(){
+        if(config.has("attributes") && config.getJSONObject("attributes").has("not_null")){
+            List<Object> featureNames= config.getJSONObject("attributes").getJSONArray("not_null").toList();
+            for(Object featureName:featureNames){
+                notNullValidate(featureName.toString());
+            }
+        }
+    }
+
+    private void crsValidation(){
+        if(this.config.has("geometry")){
+            JSONObject geometry = this.config.getJSONObject("geometry");
+            if(geometry.has("crs")){
+                String crs = geometry.getString("crs");
+                String val = this.featureSource.getSchema().getCoordinateReferenceSystem().toString();
+                if(!val.equals(crs)){
+                    writeToReport(String.format("Error: Invalid CRS found %s", val));
+                }
+            }
+        }
+    }
+
+    private void geometryTypeValidation(){
+        if(config.has("geometry")){
+            JSONObject geometry = config.getJSONObject("geometry");
+            if(geometry.has("type")){
+                String type = geometry.getString("type");
+                String val = this.spatialRDD.rawSpatialRDD.first().getGeometryType();
+                if(!val.equals(type)){
+                    writeToReport(String.format("Error: Invalid Geom type found %s", val));
+                }
+            }
+        }
+    }
 
     public void validate() {
         dtypesValidation();
@@ -457,6 +503,14 @@ public class ConfigValidator {
         valuesValidation();
 
         subsetsValidation();
+
+        notNullValidation();
+
+        crsValidation();
+
+        geometryTypeValidation();
+
+        
         // System.out.println("\n\n\n\n");
         // UDF1<String, Boolean> isValidJsonStructure = new UDF1<String, Boolean>() {
         //     @Override
