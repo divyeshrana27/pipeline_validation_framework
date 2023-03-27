@@ -9,6 +9,10 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import javax.swing.text.StyledEditorKit.BoldAction;
+
+import org.apache.arrow.flatbuf.Bool;
 import org.apache.sedona.core.formatMapper.shapefileParser.ShapefileReader;
 import org.apache.sedona.core.spatialRDD.SpatialRDD;
 import org.apache.sedona.sql.utils.Adapter;
@@ -220,11 +224,15 @@ public class ConfigValidator {
         }
     }
 
+    // wrap these helper functions in a different class.
+
+
     private Object getValue(JSONObject obj, String featureName, String key){
         String featureNameDtype = getDataTypeFor(featureName).simpleString();
         switch (featureNameDtype) {
             case "long":
                 return obj.getLong(key);
+
             case "double":
                 return obj.getDouble(key);
 
@@ -247,6 +255,7 @@ public class ConfigValidator {
         switch (featureNameDtype) {
             case "bigint":
                 return arr.getLong(idx);
+
             case "double":
                 return arr.getDouble(idx);
 
@@ -261,6 +270,29 @@ public class ConfigValidator {
 
             default:
                 return arr.getString(idx);
+        }
+    }
+
+    private Object[] getValuesArray(JSONObject obj, String featureName){
+        String featureNameDtype = getDataTypeFor(featureName).simpleString();
+        switch (featureNameDtype) {
+            case "bigint":
+                return obj.getJSONArray(featureName).toList().stream().map(x -> (Long)x).toArray();
+
+            case "double":
+                return obj.getJSONArray(featureName).toList().stream().map(x -> (Double)x).toArray();
+
+            case "float":
+                return obj.getJSONArray(featureName).toList().stream().map(x -> (Float)x).toArray();
+
+            case "integer":
+                return obj.getJSONArray(featureName).toList().stream().map(x -> (Integer)x).toArray();
+            
+            case "boolean":
+                return obj.getJSONArray(featureName).toList().stream().map(x -> (Boolean)x).toArray();
+
+            default:
+                return obj.getJSONArray(featureName).toList().stream().map(x -> (String)x).toArray();
         }
     }
 
@@ -366,6 +398,53 @@ public class ConfigValidator {
         }
     }
 
+    private Boolean inclusiveSubsetValidation(String featureName, Object[] vals){
+        Dataset<Row> invalidDf = this.df.filter(
+            functions.not(
+            functions.when(functions.not(functions.isnull(functions.col(featureName))), 
+            functions.col(featureName).isin(vals))
+            )
+        );
+        // get those rows which failed here
+        Boolean verdict = invalidDf.count() == 0;
+        if(verdict == false){
+            generateReportOfInvalidData(invalidDf, "report/invalidNotEqualVal_"+featureName);
+        }
+        return verdict;
+    }
+
+    private Boolean exclusiveSubsetValidation(String featureName, Object[] vals){
+        Dataset<Row> invalidDf = this.df.filter(
+            functions.when(functions.not(functions.isnull(functions.col(featureName))), 
+            functions.col(featureName).isin(vals))
+        );
+        // get those rows which failed here
+        Boolean verdict = invalidDf.count() == 0;
+        if(verdict == false){
+            generateReportOfInvalidData(invalidDf, "report/invalidNotEqualVal_"+featureName);
+        }
+        return verdict;
+    }
+
+    private void subsetsValidation(){
+        if(config.has("attributes") && config.getJSONObject("attributes").has("subsets")){
+            JSONObject subsets = config.getJSONObject("attributes").getJSONObject("subsets");
+            if(subsets.has("inclusive")){
+                JSONObject inclusive = subsets.getJSONObject("inclusive");
+                for (String featureName : inclusive.keySet()) {
+                    System.out.println(inclusive.getJSONArray(featureName).toList() + " " + featureName);
+                    inclusiveSubsetValidation(featureName, getValuesArray(inclusive, featureName));
+                }
+            }
+            if(subsets.has("exclusive")){
+                JSONObject exclusive = subsets.getJSONObject("exclusive");
+                for (String featureName : exclusive.keySet()) {
+                    exclusiveSubsetValidation(featureName, getValuesArray(exclusive, featureName));
+                }
+            }
+        }
+    }    
+
     
 
     public void validate() {
@@ -377,6 +456,7 @@ public class ConfigValidator {
 
         valuesValidation();
 
+        subsetsValidation();
         // System.out.println("\n\n\n\n");
         // UDF1<String, Boolean> isValidJsonStructure = new UDF1<String, Boolean>() {
         //     @Override
