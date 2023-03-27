@@ -1,3 +1,0 @@
-Error: Invalid json structure for column Condition
-
-

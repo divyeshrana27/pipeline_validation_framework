@@ -33,6 +33,9 @@ import org.opengis.feature.type.AttributeDescriptor;
 
 import com.example.udfutils.ValidJSONCheck;
 
+import afu.org.checkerframework.checker.fenum.qual.SwingCompassDirection;
+import afu.org.checkerframework.checker.units.qual.C;
+
 
 /* Currently only focus on shapefile */
 
@@ -47,13 +50,7 @@ public class ConfigValidator {
     private FeatureSource<SimpleFeatureType, SimpleFeature> featureSource;
     private Map<String, DataType> dtypesMapStringToDatatype;
     private PrintWriter report;
-    // to check the types we can use geotools as they are useful instead of sedona.
-    // then we can convert to dataframe from sedona, then we can cast the types.
-    // after that we have a choice there, use dataframe for filteration or maybe use
-    // rdd.. we have a choice so its fine.
-
-    // first step is to convert the data types and accordingly casting the columns
-
+    
     private DataType getDataTypeFor(String featureName){
         DataType featureNameType = this.df.schema().apply(featureName).dataType();
         return featureNameType;
@@ -144,7 +141,7 @@ public class ConfigValidator {
         SedonaSQLRegistrator.registerAll(this.sparkSession);
         this.sc = new JavaSparkContext(this.sparkSession.sparkContext());
         this.spatialRDD = ShapefileReader.readToGeometryRDD(sc, inputFilePath);
-        this.df = Adapter.toDf(ShapefileReader.readToGeometryRDD(sc, inputFilePath),
+        this.df = Adapter.toDf(this.spatialRDD,
                 sparkSession);
 
         // For dtypes..
@@ -194,7 +191,8 @@ public class ConfigValidator {
     private Boolean checkJSONStructure(String featureName){
         this.sparkSession.udf().register("isValidJsonStructure", new ValidJSONCheck(), DataTypes.BooleanType);
 
-        Dataset<Row> invalidDf = this.df.filter(functions.not(
+        Dataset<Row> invalidDf = this.df.filter(
+            functions.not(
             functions.when(functions.not(functions.isnull(functions.col(featureName))), 
             functions.callUDF("isValidJsonStructure", functions.col(featureName)))
             ));
@@ -222,10 +220,162 @@ public class ConfigValidator {
         }
     }
 
+    private Object getValue(JSONObject obj, String featureName, String key){
+        String featureNameDtype = getDataTypeFor(featureName).simpleString();
+        switch (featureNameDtype) {
+            case "long":
+                return obj.getLong(key);
+            case "double":
+                return obj.getDouble(key);
+
+            case "float":
+                return obj.getFloat(key);
+
+            case "integer":
+                return obj.getInt(key);
+            
+            case "boolean":
+                return obj.getBoolean(key);
+
+            default:
+                return obj.getString(key);
+        }
+    }
+
+    private Object getValue(JSONArray arr, String featureName, Integer idx){
+        String featureNameDtype = getDataTypeFor(featureName).simpleString();
+        switch (featureNameDtype) {
+            case "bigint":
+                return arr.getLong(idx);
+            case "double":
+                return arr.getDouble(idx);
+
+            case "float":
+                return arr.getFloat(idx);
+
+            case "integer":
+                return arr.getInt(idx);
+            
+            case "boolean":
+                return arr.getBoolean(idx);
+
+            default:
+                return arr.getString(idx);
+        }
+    }
+
+    private Boolean inclusiveRangeValidation(String featureName, Object lower, Object upper){
+        Dataset<Row> invalidDf = this.df.filter(
+            functions.not(
+            functions.when(functions.not(functions.isnull(functions.col(featureName))), 
+            functions.col(featureName).geq(lower).and(functions.col(featureName).leq(upper)))
+            )
+        );
+        // get those rows which failed here
+        Boolean verdict = invalidDf.count() == 0;
+        if(verdict == false){
+            generateReportOfInvalidData(invalidDf, "report/invalidInclusiveRange_"+featureName);
+        }
+        return verdict;
+    }
+
+    private Boolean exclusiveRangeValidation(String featureName, Object lower, Object upper){
+        Dataset<Row> invalidDf = this.df.filter(
+            functions.not(
+            functions.when(functions.not(functions.isnull(functions.col(featureName))), 
+            functions.col(featureName).lt(lower).or(functions.col(featureName).gt(upper)))
+            )
+        );
+        // get those rows which failed here
+        Boolean verdict = invalidDf.count() == 0;
+        if(verdict == false){
+            generateReportOfInvalidData(invalidDf, "report/invalidInclusiveRange_"+featureName);
+        }
+        return verdict;
+    }
+
+    private void rangesValidation(){
+        if(this.config.has("attributes") && this.config.getJSONObject("attributes").has("ranges")){
+            JSONObject ranges = this.config.getJSONObject("attributes").getJSONObject("ranges");
+            if(ranges.has("inclusive")){
+                JSONObject inclusive = ranges.getJSONObject("inclusive");
+                for (String featureName : inclusive.keySet()) {
+                    Object lower = getValue(inclusive.getJSONArray(featureName), featureName, 0);
+                    Object upper = getValue(inclusive.getJSONArray(featureName), featureName, 1);
+                    inclusiveRangeValidation(featureName, lower, upper);
+                }
+            }
+            if(ranges.has("exclusive")){
+                JSONObject exclusive = ranges.getJSONObject("exclusive");
+                for (String featureName : exclusive.keySet()) {
+                    Object lower = getValue(exclusive.getJSONArray(featureName), featureName, 0);
+                    Object upper = getValue(exclusive.getJSONArray(featureName), featureName, 1);
+                    exclusiveRangeValidation(featureName, lower, upper);
+                }
+            }
+        }
+    }
+
+    private Boolean equalValueValidation(String featureName, Object val){
+        Dataset<Row> invalidDf = this.df.filter(
+            functions.not(
+            functions.when(functions.not(functions.isnull(functions.col(featureName))), 
+            functions.col(featureName).equalTo(val))
+            )
+        );
+        // get those rows which failed here
+        Boolean verdict = invalidDf.count() == 0;
+        if(verdict == false){
+            generateReportOfInvalidData(invalidDf, "report/invalidEqualVal_"+featureName);
+        }
+        return verdict;
+    }
+
+    private Boolean notEqualValueValidation(String featureName, Object val){
+        Dataset<Row> invalidDf = this.df.filter(
+            functions.not(
+            functions.when(functions.not(functions.isnull(functions.col(featureName))), 
+            functions.col(featureName).notEqual(val))
+            )
+        );
+        // get those rows which failed here
+        Boolean verdict = invalidDf.count() == 0;
+        if(verdict == false){
+            generateReportOfInvalidData(invalidDf, "report/invalidNotEqualVal_"+featureName);
+        }
+        return verdict;
+    }
+
+    private void valuesValidation(){
+        if(this.config.has("attributes") && this.config.getJSONObject("attributes").has("values")){
+            JSONObject values = this.config.getJSONObject("attributes").getJSONObject("values");
+            if(values.has("equal")){
+                JSONObject equal = values.getJSONObject("equal");
+                for (String featureName : equal.keySet()) {
+                    Object val = getValue(equal, featureName, featureName);
+                    equalValueValidation(featureName, val);
+                }
+            }
+            if(values.has("not_equal")){
+                JSONObject notEqual = values.getJSONObject("not_equal");
+                for (String featureName : notEqual.keySet()) {
+                    Object val = getValue(notEqual, featureName, featureName);
+                    notEqualValueValidation(featureName, val);
+                }
+            }
+        }
+    }
+
+    
+
     public void validate() {
         dtypesValidation();
 
         JSONValidation();
+
+        rangesValidation();
+
+        valuesValidation();
 
         // System.out.println("\n\n\n\n");
         // UDF1<String, Boolean> isValidJsonStructure = new UDF1<String, Boolean>() {
